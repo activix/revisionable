@@ -84,6 +84,7 @@ trait RevisionableTrait
         static::deleted(function ($model) {
             $model->preSave();
             $model->postDelete();
+            $model->postForceDelete();
         });
     }
 
@@ -178,7 +179,7 @@ trait RevisionableTrait
             $revisions = array();
 
             foreach ($changes_to_record as $key => $change) {
-                $revisions[] = array(
+                $original = array(
                     'revisionable_type' => $this->getMorphClass(),
                     'revisionable_id' => $this->getKey(),
                     'key' => $key,
@@ -188,6 +189,8 @@ trait RevisionableTrait
                     'created_at' => new \DateTime(),
                     'updated_at' => new \DateTime(),
                 );
+
+                $revisions[] = array_merge($original, $this->getAdditionalFields());
             }
 
             if (count($revisions) > 0) {
@@ -231,6 +234,10 @@ trait RevisionableTrait
                 'updated_at' => new \DateTime(),
             );
 
+            //Determine if there are any additional fields we'd like to add to our model contained in the config file, and
+            //get them into an array.
+            $revisions = array_merge($revisions[0], $this->getAdditionalFields());
+
             $revision = Revisionable::newModel();
             \DB::table($revision->getTable())->insert($revisions);
             \Event::dispatch('revisionable.created', array('model' => $this, 'revisions' => $revisions));
@@ -257,6 +264,41 @@ trait RevisionableTrait
                 'created_at' => new \DateTime(),
                 'updated_at' => new \DateTime(),
             );
+
+            //Since there is only one revision because it's deleted, let's just merge into revision[0]
+            $revisions = array_merge($revisions[0], $this->getAdditionalFields());
+
+            $revision = Revisionable::newModel();
+            \DB::table($revision->getTable())->insert($revisions);
+            \Event::dispatch('revisionable.deleted', array('model' => $this, 'revisions' => $revisions));
+        }
+    }
+
+    /**
+     * If forcedeletes are enabled, set the value created_at of model to null
+     *
+     * @return void|bool
+     */
+    public function postForceDelete()
+    {
+        if (empty($this->revisionForceDeleteEnabled)) {
+            return false;
+        }
+
+        if ((!isset($this->revisionEnabled) || $this->revisionEnabled)
+            && (($this->isSoftDelete() && $this->isForceDeleting()) || !$this->isSoftDelete())) {
+
+            $revisions[] = array(
+                'revisionable_type' => $this->getMorphClass(),
+                'revisionable_id' => $this->getKey(),
+                'key' => self::CREATED_AT,
+                'old_value' => $this->{self::CREATED_AT},
+                'new_value' => null,
+                'user_id' => $this->getSystemUserId(),
+                'created_at' => new \DateTime(),
+                'updated_at' => new \DateTime(),
+            );
+
             $revision = Revisionable::newModel();
             \DB::table($revision->getTable())->insert($revisions);
             \Event::dispatch('revisionable.deleted', array('model' => $this, 'revisions' => $revisions));
@@ -283,6 +325,22 @@ trait RevisionableTrait
         }
 
         return null;
+    }
+
+
+    public function getAdditionalFields()
+    {
+        $additional = [];
+        //Determine if there are any additional fields we'd like to add to our model contained in the config file, and
+        //get them into an array.
+        $fields = config('revisionable.additional_fields', []);
+        foreach($fields as $field) {
+            if(Arr::has($this->originalData, $field)) {
+                $additional[$field]  =  Arr::get($this->originalData, $field);
+            }
+        }
+
+        return $additional;
     }
 
     /**
